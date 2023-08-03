@@ -126,17 +126,13 @@ class SummaCImager:
             batch_tokens = self.tokenizer.batch_encode_plus(list(zip(batch_prems, batch_hypos)), padding=True, truncation=True, max_length=self.max_input_length, return_tensors="pt", truncation_strategy="only_first")
             with torch.no_grad():
                 model_outputs = self.model(**{k: v.to(self.device) for k, v in batch_tokens.items()})
-
+                
+            batch_probs = torch.nn.functional.softmax(model_outputs["logits"], dim=-1)
             if scores is not None:
-                batch_probs = torch.nn.functional.softmax(model_outputs["logits"], dim=-1)
-                batch_evids = (batch_probs[:, self.entailment_idx] * scores).tolist()
-                batch_conts = (batch_probs[:, self.contradiction_idx] * scores).tolist()
-                batch_neuts = (batch_probs[:, self.neutral_idx] * scores).tolist()
-            else:
-                batch_probs = torch.nn.functional.softmax(model_outputs["logits"], dim=-1)
-                batch_evids = batch_probs[:, self.entailment_idx].tolist()
-                batch_conts = batch_probs[:, self.contradiction_idx].tolist()
-                batch_neuts = batch_probs[:, self.neutral_idx].tolist()
+                batch_probs *= scores
+            batch_evids = batch_probs[:, self.entailment_idx].tolist()
+            batch_conts = batch_probs[:, self.contradiction_idx].tolist()
+            batch_neuts = batch_probs[:, self.neutral_idx].tolist()
 
             for b, evid, cont, neut in zip(batch, batch_evids, batch_conts, batch_neuts):
                 image[0, b["doc_i"], b["gen_i"]] = evid
@@ -147,9 +143,9 @@ class SummaCImager:
             self.cache[cache_key] = image
         return image
 
-    def build_images(self, originals, generateds, scores=None, batch_size=128):
+    def build_images(self, originals, generateds, batch_size=128):
         todo_originals, todo_generateds = [], []
-        for ori, gen in zip(originals, generateds, scores):
+        for ori, gen in zip(originals, generateds):
             cache_key = (ori, gen)
             if cache_key not in self.cache:
                 todo_originals.append(ori)
@@ -252,8 +248,8 @@ class SummaCConv(torch.nn.Module):
         if start_file is not None:
             print(self.load_state_dict(torch.load(start_file)))
 
-    def build_image(self, original, generated, scores):
-        images = [imager.build_image(original, generated, scores) for imager in self.imagers]
+    def build_image(self, original, generated):
+        images = [imager.build_image(original, generated) for imager in self.imagers]
         image = np.concatenate(images, axis=0)
         return image
 
