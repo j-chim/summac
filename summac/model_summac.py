@@ -90,7 +90,7 @@ class SummaCImager:
         elif granularity == "mixed":
             return self.split_sentences(text) + self.split_paragraphs(text)
 
-    def build_chunk_dataset(self, original, generated, pair_idx=None):
+    def build_chunk_dataset(self, original, generated, scores=None, pair_idx=None):
         if len(self.grans) == 1:
             gran_doc, gran_sum = self.grans[0], self.grans[0]
         else:
@@ -100,7 +100,30 @@ class SummaCImager:
         generated_chunks = self.split_text(generated, granularity=gran_sum)
 
         N_ori, N_gen = len(original_chunks), len(generated_chunks)
-        dataset = [{"premise": original_chunks[i], "hypothesis": generated_chunks[j], "doc_i": i, "gen_i": j, "pair_idx": pair_idx} for i in range(N_ori) for j in range(N_gen)]
+        if scores is None:
+            dataset = [
+            {
+                "premise": original_chunks[i], 
+                "hypothesis": generated_chunks[j], 
+                "doc_i": i, 
+                "gen_i": j, 
+                "pair_idx": pair_idx,
+            } 
+                for i in range(N_ori) 
+                for j in range(N_gen)
+            ]
+        else: 
+            dataset = [{
+                "premise": original_chunks[i], 
+                "hypothesis": generated_chunks[j], 
+                "doc_i": i, 
+                "gen_i": j, 
+                "pair_idx": pair_idx,
+                "score": scores[i]
+            } 
+                for i in range(N_ori) 
+                for j in range(N_gen)
+            ]
         return dataset, N_ori, N_gen
 
     def build_image(self, original, generated, scores=None):
@@ -110,7 +133,7 @@ class SummaCImager:
             cached_image = cached_image[:, :self.max_doc_sents, :]
             return cached_image
 
-        dataset, N_ori, N_gen = self.build_chunk_dataset(original, generated)
+        dataset, N_ori, N_gen = self.build_chunk_dataset(original, generated, scores)
         
         if len(dataset) == 0:
             return np.zeros((3, 1, 1))
@@ -126,10 +149,21 @@ class SummaCImager:
             batch_tokens = self.tokenizer.batch_encode_plus(list(zip(batch_prems, batch_hypos)), padding=True, truncation=True, max_length=self.max_input_length, return_tensors="pt", truncation_strategy="only_first")
             with torch.no_grad():
                 model_outputs = self.model(**{k: v.to(self.device) for k, v in batch_tokens.items()})
-                
-            batch_probs = torch.nn.functional.softmax(model_outputs["logits"], dim=-1)
+            
+            logits = model_outputs["logits"]
+            batch_probs = torch.nn.functional.softmax(logits, dim=-1)
             if scores is not None:
-                batch_probs *= scores
+                batch_scores = torch.stack(
+                    [
+                        torch.tensor(
+                            [b["score"] for b in batch], 
+                            dtype=torch.float32
+                        )
+                        for _ in range(3) # 3 output classes
+                    ],
+                    dim=1
+                ).to(self.device)
+                batch_probs *= batch_scores
             batch_evids = batch_probs[:, self.entailment_idx].tolist()
             batch_conts = batch_probs[:, self.contradiction_idx].tolist()
             batch_neuts = batch_probs[:, self.neutral_idx].tolist()
