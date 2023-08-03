@@ -103,7 +103,7 @@ class SummaCImager:
         dataset = [{"premise": original_chunks[i], "hypothesis": generated_chunks[j], "doc_i": i, "gen_i": j, "pair_idx": pair_idx} for i in range(N_ori) for j in range(N_gen)]
         return dataset, N_ori, N_gen
 
-    def build_image(self, original, generated):
+    def build_image(self, original, generated, scores=None):
         cache_key = (original, generated)
         if self.use_cache and cache_key in self.cache:
             cached_image = self.cache[cache_key]
@@ -127,10 +127,16 @@ class SummaCImager:
             with torch.no_grad():
                 model_outputs = self.model(**{k: v.to(self.device) for k, v in batch_tokens.items()})
 
-            batch_probs = torch.nn.functional.softmax(model_outputs["logits"], dim=-1)
-            batch_evids = batch_probs[:, self.entailment_idx].tolist()
-            batch_conts = batch_probs[:, self.contradiction_idx].tolist()
-            batch_neuts = batch_probs[:, self.neutral_idx].tolist()
+            if scores is not None:
+                batch_probs = torch.nn.functional.softmax(model_outputs["logits"], dim=-1)
+                batch_evids = (batch_probs[:, self.entailment_idx] * scores).tolist()
+                batch_conts = (batch_probs[:, self.contradiction_idx] * scores).tolist()
+                batch_neuts = (batch_probs[:, self.neutral_idx] * scores).tolist()
+            else:
+                batch_probs = torch.nn.functional.softmax(model_outputs["logits"], dim=-1)
+                batch_evids = batch_probs[:, self.entailment_idx].tolist()
+                batch_conts = batch_probs[:, self.contradiction_idx].tolist()
+                batch_neuts = batch_probs[:, self.neutral_idx].tolist()
 
             for b, evid, cont, neut in zip(batch, batch_evids, batch_conts, batch_neuts):
                 image[0, b["doc_i"], b["gen_i"]] = evid
@@ -141,9 +147,9 @@ class SummaCImager:
             self.cache[cache_key] = image
         return image
 
-    def build_images(self, originals, generateds, batch_size=128):
+    def build_images(self, originals, generateds, scores=None, batch_size=128):
         todo_originals, todo_generateds = [], []
-        for ori, gen in zip(originals, generateds):
+        for ori, gen in zip(originals, generateds, scores):
             cache_key = (ori, gen)
             if cache_key not in self.cache:
                 todo_originals.append(ori)
@@ -246,8 +252,8 @@ class SummaCConv(torch.nn.Module):
         if start_file is not None:
             print(self.load_state_dict(torch.load(start_file)))
 
-    def build_image(self, original, generated):
-        images = [imager.build_image(original, generated) for imager in self.imagers]
+    def build_image(self, original, generated, scores):
+        images = [imager.build_image(original, generated, scores) for imager in self.imagers]
         image = np.concatenate(images, axis=0)
         return image
 
@@ -346,8 +352,8 @@ class SummaCZS:
     def save_imager_cache(self):
         self.imager.save_cache()
 
-    def score_one(self, original, generated):
-        image = self.imager.build_image(original, generated)
+    def score_one(self, original, generated, scores=None):
+        image = self.imager.build_image(original, generated, scores)
         score = self.image2score(image)
         return {"image": image, "score": score}
 
